@@ -144,6 +144,17 @@ public class HmdVisorBackend : NOVRBehaviour
             0f));
     }
 
+    /// <summary>
+    /// Put the HMD subtree and the cockpit-panel elements back under the game's
+    /// HUD now, before a scene change destroys anything. See
+    /// <see cref="HarmonyPatches.SceneTransitionRelease"/>.
+    /// </summary>
+    public static void ReleaseForSceneChange()
+    {
+        var self = _instance;
+        if (self != null && self._active) self.Teardown();
+    }
+
     protected override void Awake()
     {
         base.Awake();
@@ -158,7 +169,9 @@ public class HmdVisorBackend : NOVRBehaviour
 
     private void Update()
     {
-        var want = FlightHudCaptureBackend.IsActive && (CapturedHmd.Visor?.Value ?? true);
+        var want = FlightHudCaptureBackend.IsActive &&
+                   !HarmonyPatches.SceneTransitionRelease.InProgress &&
+                   (CapturedHmd.Visor?.Value ?? true);
         if (!want)
         {
             if (_active) Teardown();
