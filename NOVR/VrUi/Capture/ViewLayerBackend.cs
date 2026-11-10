@@ -124,10 +124,21 @@ public class ViewLayerBackend : NOVRBehaviour
         Teardown();
     }
 
+    /// <summary>
+    /// Put the icon subtrees back under the game's HUD now, before a scene
+    /// change destroys anything. See <see cref="HarmonyPatches.SceneTransitionRelease"/>.
+    /// </summary>
+    public static void ReleaseForSceneChange()
+    {
+        var self = _instance;
+        if (self != null && self._active) self.Teardown();
+    }
+
     private void Update()
     {
         var combatHud = SceneSingleton<CombatHUD>.i;
         var want = FlightHudCaptureBackend.IsActive &&
+                   !HarmonyPatches.SceneTransitionRelease.InProgress &&
                    (CapturedHmd.ViewIcons?.Value ?? true) &&
                    combatHud != null &&
                    combatHud.iconLayer != null &&
