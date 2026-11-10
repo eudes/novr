@@ -238,7 +238,7 @@ public class ViewLayerBackend : NOVRBehaviour
         var nose = Quaternion.Inverse(NOVRHeadsetData.Rotation) * Vector3.forward;
         if (nose.z < 0.05f) return new Vector2(1e6f, 1e6f);
 
-        var fov = Mathf.Clamp(CapturedHmd.VisorFieldOfView?.Value ?? 70f, 30f, 110f);
+        var fov = CapturedHmd.ViewIconsFieldOfViewDegrees;
         var pxPerTan = TexWidth * 0.5f / Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
         return new Vector2(
             TexWidth * 0.5f + nose.x / nose.z * pxPerTan,
@@ -385,7 +385,7 @@ public class ViewLayerBackend : NOVRBehaviour
         t.localPosition = Vector3.zero;
         t.localRotation = Quaternion.identity;
 
-        var fovDegrees = Mathf.Clamp(CapturedHmd.VisorFieldOfView?.Value ?? 70f, 30f, 110f);
+        var fovDegrees = CapturedHmd.ViewIconsFieldOfViewDegrees;
         var aspect = (float)TexWidth / TexHeight;
         var verticalFov =
             2f * Mathf.Atan(Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad) / aspect) * Mathf.Rad2Deg;
@@ -478,7 +478,7 @@ public class ViewLayerBackend : NOVRBehaviour
         if (_panelRect == null) return;
 
         var distance = CapturedFlightHud.DistanceMeters;
-        var fovDegrees = Mathf.Clamp(CapturedHmd.VisorFieldOfView?.Value ?? 70f, 30f, 110f);
+        var fovDegrees = CapturedHmd.ViewIconsFieldOfViewDegrees;
         var widthMeters = 2f * distance * Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad);
 
         if (_panelImage != null && _panelImage.material != null)

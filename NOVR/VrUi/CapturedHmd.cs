@@ -18,11 +18,26 @@ public static class CapturedHmd
 {
     public static ConfigEntry<bool> Visor;
     public static ConfigEntry<float> VisorFieldOfView;
+    public static ConfigEntry<float> ViewIconsFieldOfView;
     public static ConfigEntry<float> PanelShading;
     public static ConfigEntry<float> PanelSpread;
     public static ConfigEntry<bool> PanelLock;
     public static ConfigEntry<bool> GazeDesignator;
     public static ConfigEntry<bool> ViewIcons;
+
+    /// <summary>
+    /// The View Icons screen's horizontal field of view: its own setting, or
+    /// the visor's when that is 0. Null-safe like every other read here.
+    /// </summary>
+    public static float ViewIconsFieldOfViewDegrees
+    {
+        get
+        {
+            var own = ViewIconsFieldOfView?.Value ?? 0f;
+            var fov = own > 0f ? own : VisorFieldOfView?.Value ?? 70f;
+            return UnityEngine.Mathf.Clamp(fov, 30f, 110f);
+        }
+    }
 
     public static void Bind(ConfigFile config)
     {
@@ -46,6 +61,20 @@ public static class CapturedHmd
                 + "spreads the HMD readouts across the whole screen; this is how much of your "
                 + "view that screen maps to.",
                 new AcceptableValueRange<float>(30f, 110f)));
+
+        ViewIconsFieldOfView = config.Bind(
+            "Experimental",
+            "View Icons Field Of View",
+            0f,
+            new ConfigDescription(
+                "Horizontal angle the View Icons virtual screen covers, in degrees, or 0 to use "
+                + "Captured HMD Field Of View. An off-view selected target or waypoint becomes an "
+                + "arrow pinned to this screen's edge, so this sets how far out from the centre "
+                + "of your view those arrows sit: lower brings them in. Icons on units stay on "
+                + "their units whatever the value. Set it separately to move the arrows without "
+                + "also resizing the helmet readouts and the weapon/map panels. Takes effect "
+                + "immediately.",
+                new AcceptableValueRange<float>(0f, 110f)));
 
         PanelShading = config.Bind(
             "Experimental",
@@ -114,7 +143,7 @@ public static class CapturedHmd
             + "across the whole screen and the screen follows the view. Icons appear wherever "
             + "you look, the designator sits fixed at the centre of your view (Select picks the "
             + "marker under it), and an off-view selected target becomes the game's own edge "
-            + "arrow pinned to the virtual screen's edge. The screen spans Captured HMD Field Of "
+            + "arrow pinned to the virtual screen's edge. The screen spans View Icons Field Of "
             + "View. Only active while Captured Flight HUD is on. Takes effect immediately.");
     }
 }
