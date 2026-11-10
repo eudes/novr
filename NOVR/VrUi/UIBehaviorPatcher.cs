@@ -21,7 +21,7 @@ public class UIBehaviorPatcher : NOVRBehaviour
         var map = new Dictionary<Type, Type>
         {
             { typeof(GameplayUI), typeof(NOVRGameplayUIBehaviour) },
-            { typeof(MessageUI), typeof(NOVRChatPanelBehaviour) },
+            { typeof(MessageUI), typeof(NOVRMessagePanelBehaviour) },
             { typeof(StatusDisplay), typeof(NOVRStatusDisplayBehavior) }
         };
 
