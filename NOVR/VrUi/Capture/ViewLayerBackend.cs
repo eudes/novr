@@ -150,6 +150,34 @@ public class ViewLayerBackend : NOVRBehaviour
     }
 
     /// <summary>
+    /// Move one more game subtree onto the virtual screen, under
+    /// <paramref name="parent"/>, for as long as this layer is active — for
+    /// elements the game creates after <see cref="Setup"/>, such as the
+    /// per-objective overlays. Only into a parent that is already on the
+    /// virtual screen; Teardown puts it back with the rest. Returns whether
+    /// <paramref name="transform"/> is on the virtual screen afterwards, so the
+    /// caller knows its positions need <see cref="RemapPixels"/>.
+    /// </summary>
+    public static bool Adopt(Transform transform, Transform parent)
+    {
+        var self = _instance;
+        if (self == null || !self._active || self._canvas == null ||
+            transform == null || parent == null ||
+            !parent.IsChildOf(self._canvas.transform))
+        {
+            return false;
+        }
+
+        if (transform.parent != parent)
+        {
+            self._captured.Add(new CapturedSubtree(transform));
+            transform.SetParent(parent, false);
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// The head eye: the disabled camera the icon code projects through while
     /// this layer is active. Its pixel rect is the capture texture (1920x1080)
     /// and its frustum is the panel's, so screen pixels map to view directions

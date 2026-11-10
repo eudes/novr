@@ -404,6 +404,8 @@ internal static class ViewLayerPatches
     {
         private static readonly FieldInfo? PointerField =
             AccessTools.Field(typeof(ObjectiveOverlay), "objectivePointer");
+        private static readonly FieldInfo? DotField =
+            AccessTools.Field(typeof(ObjectiveOverlay), "objectiveDot");
 
         [HarmonyPrefix]
         private static void Prefix(out Camera? __state) => Swap(out __state);
@@ -415,9 +417,17 @@ internal static class ViewLayerPatches
         private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) =>
             RedirectViewReads(instructions);
 
-        // The pointer and its no-overlap text target move to the island; the
-        // objective dot and size indicator stay on the flight-HUD canvas where
-        // the game keeps them, in the pixel space that canvas already uses.
+        // The game writes the pointer and the objective dot from one projection,
+        // which the swap above makes the head's. The pointer already lives on the
+        // island (Initialize parents it to the shared icon layer), but the dot and
+        // its size indicator stay on the overlay itself, under the flight HUD —
+        // a cockpit-fixed panel measured through the design eye. Head pixels on
+        // that panel put the dot wherever the head happened to point, so it swam
+        // with every head movement instead of holding on the objective. The
+        // overlay is moved next to its pointer instead, and its dot is
+        // re-expressed on the island the same way. The overlay's size indicator,
+        // the ring a waypoint is flown through, is not drawn here at all while
+        // this layer is active: see WaypointRings.
         [HarmonyPostfix]
         private static void Postfix(ObjectiveOverlay __instance)
         {
@@ -427,6 +437,12 @@ internal static class ViewLayerPatches
             if (pointer != null)
             {
                 pointer.transform.position = ViewLayerBackend.RemapPixels(pointer.transform.position);
+
+                var dot = DotField?.GetValue(__instance) as Image;
+                if (dot != null && ViewLayerBackend.Adopt(__instance.transform, pointer.transform.parent))
+                {
+                    dot.transform.position = ViewLayerBackend.RemapPixels(dot.transform.position);
+                }
             }
 
             var noOverlap = __instance.TextNoOverlap;
