@@ -43,7 +43,7 @@ public class VrUiCursor: NOVRBehaviour
     /// which is the whole answer whenever the stick cursor is off — and keeps
     /// the laser up in hand mode while the cursor is hidden, as before.</para>
     /// </summary>
-    public static XRNode? CursorHand => _activeCursorHand ?? ConfiguredCursorHand;
+    public static XRNode? CursorHand => _activeCursorHand ?? (_mouseHasCursor ? null : ConfiguredCursorHand);
 
     /// <summary>
     /// True while the stick cursor is moving the cursor with a stick the
@@ -88,9 +88,17 @@ public class VrUiCursor: NOVRBehaviour
     private const float MaxYawDegrees = 65f;
     private const float MaxPitchDegrees = 45f;
     private const float DefaultProjectionDistance = 5;
-    // Shared with MotionControllerVisual on purpose: see IsControllerIdle.
-    private const float ControllerIdleMoveMeters = 0.02f;
-    private const float ControllerIdleMoveDegrees = 3f;
+    // How far a controller has to move, from where it was the last time the
+    // mouse moved, to take the cursor back from the mouse. Much looser than
+    // ControllerRestDetector's tolerance on purpose: a controller still in the
+    // other hand while the mouse is in use wobbles, and wobbling must not
+    // snatch the cursor back. Pointing somewhere else on the panel easily
+    // clears it.
+    private const float MouseReclaimMeters = 0.10f;
+    private const float MouseReclaimDegrees = 15f;
+    // How long the cursor waits for the OS pointer to arrive where it was
+    // warped to before trusting the reported position again.
+    private const float MouseWarpSettleSeconds = 0.25f;
     private const float CursorMinDistanceMeters = 1.0f;
     private const float CursorCanvasScale = 0.001f;
     private const int CursorTextureSize = 64;
@@ -123,11 +131,13 @@ public class VrUiCursor: NOVRBehaviour
     /// </summary>
     private struct HandState
     {
-        public Vector3 LastPosition;
-        public Quaternion LastRotation;
-        public float IdleTime;
-        public bool Tracked;
+        public ControllerRestDetector Rest;
         public bool TriggerPressed;
+        // Where the hand was the last time the mouse moved; see
+        // MouseHoldsCursor.
+        public Vector3 MouseAnchorPosition;
+        public Quaternion MouseAnchorRotation;
+        public bool HasMouseAnchor;
     }
 
     private HandState _rightHand;
@@ -149,6 +159,14 @@ public class VrUiCursor: NOVRBehaviour
     private bool _snapControllerAim;
     private static XRNode? _activeCursorHand;
     private static bool _stickHoldsFlightAxes;
+    /// <summary>
+    /// True from the moment the mouse moves until a controller asks for the
+    /// cursor back. See <see cref="MouseHoldsCursor"/>.
+    /// </summary>
+    private static bool _mouseHasCursor;
+    private bool _controllerHadCursor;
+    private Vector2 _mouseWarpTarget;
+    private float _mouseWarpUntil = -1f;
     private bool _hmdGazeActive;
     private bool _stickModeActive;
     private bool _stickModeLogged;
@@ -454,7 +472,7 @@ public class VrUiCursor: NOVRBehaviour
             {
                 var mouse = _realMouse;
                 if (mouse == null) return;
-                pointerPosition = mouse.position.ReadValue();
+                pointerPosition = ReadMousePointer(mouse);
             }
 
             // IMGUI hit-tests and draws hover at the OS pointer, so with the F1
@@ -512,9 +530,18 @@ public class VrUiCursor: NOVRBehaviour
     /// <c>Cursor Input Source</c> names, or — since the stick cursor overrides
     /// that setting, leaving it at its default of Mouse — whichever hand
     /// pulled its trigger last. See <see cref="PickHeldHand"/>.</para>
+    ///
+    /// <para>Moving the mouse takes the cursor back from a held controller
+    /// until the controller pulls its trigger or is moved deliberately. See
+    /// <see cref="MouseHoldsCursor"/>.</para>
     /// </summary>
     private void UpdateCursorInput()
     {
+        // Read before it is cleared below: the mouse taking the cursor from a
+        // controller is the one hand-over that moves the OS pointer.
+        _controllerHadCursor = _controllerModeActive;
+        UpdateMouseWarp();
+
         _hmdGazeActive = false;
         _controllerModeActive = false;
         _activeCursorHand = null;
@@ -598,6 +625,11 @@ public class VrUiCursor: NOVRBehaviour
     private void UpdateControllerInput()
     {
         var configured = ConfiguredCursorHand;
+        if ((configured.HasValue || StickCursorConfig.Enabled) && MouseHoldsCursor(configured))
+        {
+            return;
+        }
+
         XRNode node;
         // PickHeldHand runs the idle test itself, on both hands. Asking again
         // below would advance the chosen hand's timer twice a frame and put a
@@ -643,7 +675,7 @@ public class VrUiCursor: NOVRBehaviour
                 Debug.Log("[VrUiCursor] Controller not tracked this frame; falling back to mouse.");
                 _controllerModeLogged = false;
             }
-            StateFor(node).Tracked = false;
+            StateFor(node).Rest.Reset();
             return;
         }
 
@@ -770,8 +802,7 @@ public class VrUiCursor: NOVRBehaviour
     {
         if (!MotionControllerPose.TryRead(node, out var position, out var rotation, out _, out _, out var trigger))
         {
-            state.Tracked = false;
-            state.IdleTime = 0f;
+            state.Rest.Reset();
             state.TriggerPressed = false;
             return false;
         }
@@ -780,7 +811,13 @@ public class VrUiCursor: NOVRBehaviour
         // not keep re-claiming the cursor, or the other hand could never take
         // it while this one is squeezed.
         var pressed = trigger > 0.5f;
-        if (pressed && !state.TriggerPressed) _lastTriggerHand = node;
+        if (pressed && !state.TriggerPressed)
+        {
+            _lastTriggerHand = node;
+            // A trigger being pulled is a hand on the controller, however
+            // still it is.
+            state.Rest.Reset();
+        }
         state.TriggerPressed = pressed;
 
         return !IsHandIdle(position, rotation, ref state);
@@ -793,8 +830,8 @@ public class VrUiCursor: NOVRBehaviour
     /// Whether a controller has been still long enough to count as put down.
     ///
     /// <para>Deliberately the same rule <see cref="MotionControllerVisual"/>
-    /// hides the model by — the same 2 cm / 3° thresholds and the same
-    /// <c>Controller Idle Timeout</c> — so the controller the pilot can see
+    /// hides the model by (<see cref="ControllerRestDetector"/> and the same
+    /// <c>Controller Idle Timeout</c>), so the controller the pilot can see
     /// and the controller that owns the cursor appear and disappear together.
     /// Two different idle rules would give a visible controller that does not
     /// point at anything, or an invisible one that still holds the cursor.</para>
@@ -802,34 +839,206 @@ public class VrUiCursor: NOVRBehaviour
     /// <para>A timeout of 0 disables it, which is the old behaviour: the
     /// controller keeps the cursor for as long as it is tracked.</para>
     /// </summary>
-    private bool IsHandIdle(Vector3 position, Quaternion rotation, ref HandState state)
+    private static bool IsHandIdle(Vector3 position, Quaternion rotation, ref HandState state) =>
+        state.Rest.Update(position, rotation, Time.unscaledDeltaTime, ModConfiguration.Instance.ControllerIdleTimeout.Value);
+
+    /// <summary>
+    /// Whether the mouse has the cursor and the controllers must leave it
+    /// alone this frame.
+    ///
+    /// <para><b>Whichever was used last wins.</b> Moving the mouse takes the
+    /// cursor from a controller at once, even one in the hand. A controller
+    /// gets it back by pulling its trigger, or by moving well away (see
+    /// <see cref="MouseReclaimMeters"/>) from where it was the last time the
+    /// mouse moved. Before this a held controller outranked the mouse
+    /// outright, so with the idle timeout off the mouse could not be used
+    /// at all while a controller was tracked.</para>
+    ///
+    /// <para><b>The OS pointer is moved to the cursor.</b> The mouse
+    /// positions the cursor absolutely, from the OS pointer, which nobody in
+    /// a headset can see and which was left wherever the mouse last put it.
+    /// Without the warp the cursor would jump there from where the controller
+    /// was pointing.</para>
+    ///
+    /// <para>Not with head-gaze underneath: there the mouse is not a mode at
+    /// all, and yielding to it would hand the cursor to the gaze.</para>
+    /// </summary>
+    private bool MouseHoldsCursor(XRNode? configured)
     {
-        var timeout = ModConfiguration.Instance.ControllerIdleTimeout.Value;
-        if (timeout <= 0f)
+        if (!StickCursorConfig.Enabled && ModConfiguration.Instance.HeadGazeCursor.Value)
         {
-            state.IdleTime = 0f;
-            state.Tracked = false;
+            _mouseHasCursor = false;
             return false;
         }
 
-        if (!state.Tracked)
+        var mouse = _realMouse;
+        var mouseMoved = mouse != null && mouse.delta.ReadValue() != Vector2.zero;
+        var checkRight = configured != XRNode.LeftHand;
+        var checkLeft = configured != XRNode.RightHand;
+
+        if (mouseMoved)
         {
-            // The first tracked frame counts as movement: picking a controller
-            // up is precisely the case this must not sit out.
-            state.Tracked = true;
-            state.IdleTime = 0f;
-        }
-        else
-        {
-            var moved = Vector3.Distance(position, state.LastPosition) > ControllerIdleMoveMeters ||
-                        Quaternion.Angle(state.LastRotation, rotation) > ControllerIdleMoveDegrees;
-            state.IdleTime = moved ? 0f : state.IdleTime + Time.unscaledDeltaTime;
+            if (!_mouseHasCursor)
+            {
+                _mouseHasCursor = true;
+                if (_controllerHadCursor)
+                {
+                    WarpMouseToCursor(mouse!);
+                    // In hand mode the mode underneath reads no trigger, so a
+                    // trigger held as the mouse took over would stay held.
+                    // In stick mode UpdateStickClickInput owns it; see
+                    // UpdateControllerInput.
+                    if (!StickCursorConfig.Enabled)
+                    {
+                        _controllerTriggerPressed = false;
+                        _controllerTriggerClicked = false;
+                    }
+                    Debug.Log("[VrUiCursor] Mouse moved; the mouse has the cursor until a controller pulls its trigger or is moved.");
+                }
+            }
+
+            // Measured from the last time the mouse moved, so a controller
+            // drifting in the other hand while the mouse is busy never adds
+            // up to a reclaim.
+            if (checkRight) UpdateMouseAnchor(XRNode.RightHand, ref _rightHand, reanchor: true);
+            if (checkLeft) UpdateMouseAnchor(XRNode.LeftHand, ref _leftHand, reanchor: true);
+            return true;
         }
 
-        state.LastPosition = position;
-        state.LastRotation = rotation;
-        return state.IdleTime > timeout;
+        if (!_mouseHasCursor)
+        {
+            return false;
+        }
+
+        // Both asked every frame (when both may point): the trigger edge is
+        // only seen by a hand whose trigger state is kept up to date.
+        var reclaimed = false;
+        if (checkRight) reclaimed |= UpdateMouseAnchor(XRNode.RightHand, ref _rightHand, reanchor: false);
+        if (checkLeft) reclaimed |= UpdateMouseAnchor(XRNode.LeftHand, ref _leftHand, reanchor: false);
+        if (!reclaimed)
+        {
+            return true;
+        }
+
+        _mouseHasCursor = false;
+        _mouseWarpUntil = -1f;
+        // Straight to where the hand points rather than sweeping across from
+        // where the mouse left the cursor, and log the hand again.
+        _snapControllerAim = true;
+        _controllerModeLogged = false;
+        Debug.Log("[VrUiCursor] A controller asked for the cursor back from the mouse.");
+        return false;
     }
+
+    /// <summary>
+    /// Keep one hand's trigger edge and mouse anchor up to date. True when the
+    /// hand asks for the cursor back: its trigger was just pulled, or it has
+    /// moved past the reclaim distance since the mouse last moved.
+    /// </summary>
+    private bool UpdateMouseAnchor(XRNode node, ref HandState state, bool reanchor)
+    {
+        if (!MotionControllerPose.TryRead(node, out var position, out var rotation, out _, out _, out var trigger))
+        {
+            state.HasMouseAnchor = false;
+            state.TriggerPressed = false;
+            state.Rest.Reset();
+            return false;
+        }
+
+        var pressed = trigger > 0.5f;
+        var pulled = pressed && !state.TriggerPressed;
+        state.TriggerPressed = pressed;
+
+        if (reanchor || !state.HasMouseAnchor)
+        {
+            // A hand that comes into tracking while the mouse has the cursor
+            // is measured from where it appeared.
+            state.MouseAnchorPosition = position;
+            state.MouseAnchorRotation = rotation;
+            state.HasMouseAnchor = true;
+            return false;
+        }
+
+        var moved = Vector3.Distance(position, state.MouseAnchorPosition) > MouseReclaimMeters ||
+                    Quaternion.Angle(state.MouseAnchorRotation, rotation) > MouseReclaimDegrees;
+        if (!pulled && !moved)
+        {
+            return false;
+        }
+
+        // The stick path picks the hand that pulled its trigger last, and
+        // PickHeldHand will not see this edge now that it has been consumed
+        // here. And the idle test has not been fed while the mouse had the
+        // cursor, so start it afresh: this hand has just shown it is held.
+        if (pulled) _lastTriggerHand = node;
+        state.Rest.Reset();
+        state.HasMouseAnchor = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Move the OS pointer to where the cursor is, so the mouse carries on
+    /// from there. See <see cref="MouseHoldsCursor"/>.
+    /// </summary>
+    private void WarpMouseToCursor(Mouse mouse)
+    {
+        var target = GetScreenPoint();
+        try
+        {
+            mouse.WarpCursorPosition(target);
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning($"[{nameof(VrUiCursor)}] Could not move the OS pointer to the cursor: {ex.Message}");
+            return;
+        }
+
+        // The warp reaches Mouse.position only once the OS reports it back,
+        // a frame or more later. Until then the cursor stays at the target
+        // (plus whatever the mouse moves meanwhile) rather than flicking back
+        // to the old pointer position. See ReadMousePointer.
+        _mouseWarpTarget = target;
+        _mouseWarpUntil = Time.unscaledTime + MouseWarpSettleSeconds;
+        if (StickCursorConfig.Enabled)
+        {
+            _stickScreenPosition = target;
+            _stickPositionValid = true;
+        }
+    }
+
+    /// <summary>
+    /// Once a frame: follow the mouse from the warp target until the OS
+    /// pointer has caught up with it.
+    /// </summary>
+    private void UpdateMouseWarp()
+    {
+        if (_mouseWarpUntil < 0f)
+        {
+            return;
+        }
+
+        var mouse = _realMouse;
+        if (mouse == null || Time.unscaledTime > _mouseWarpUntil)
+        {
+            _mouseWarpUntil = -1f;
+            return;
+        }
+
+        _mouseWarpTarget += mouse.delta.ReadValue();
+        _mouseWarpTarget.x = Mathf.Clamp(_mouseWarpTarget.x, 0f, Screen.width);
+        _mouseWarpTarget.y = Mathf.Clamp(_mouseWarpTarget.y, 0f, Screen.height);
+        if ((mouse.position.ReadValue() - _mouseWarpTarget).sqrMagnitude < 9f)
+        {
+            _mouseWarpUntil = -1f;
+        }
+    }
+
+    /// <summary>
+    /// The mouse's screen position, or the warp target while the OS pointer
+    /// is still on its way there.
+    /// </summary>
+    private Vector2 ReadMousePointer(Mouse mouse) =>
+        _mouseWarpUntil >= 0f ? _mouseWarpTarget : mouse.position.ReadValue();
 
     /// <summary>
     /// Forget who was pointing and whether the stick was ours. Both outlive a
@@ -842,6 +1051,7 @@ public class VrUiCursor: NOVRBehaviour
     {
         _activeCursorHand = null;
         _stickHoldsFlightAxes = false;
+        _mouseHasCursor = false;
     }
 
     /// <summary>
@@ -924,7 +1134,7 @@ public class VrUiCursor: NOVRBehaviour
         if (realMouse != null && realMouse.delta.ReadValue() != Vector2.zero)
         {
             // The mouse still works, and wins the moment it actually moves.
-            _stickScreenPosition = realMouse.position.ReadValue();
+            _stickScreenPosition = ReadMousePointer(realMouse);
         }
         else if (player != null && stickIsOurs)
         {
