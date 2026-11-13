@@ -25,6 +25,15 @@ public static class CapturedHmd
     public static ConfigEntry<bool> GazeDesignator;
     public static ConfigEntry<bool> ViewIcons;
 
+    public static ConfigEntry<float> ViewIconsMarkerScale;
+
+    /// <summary>
+    /// Multiplier on the size of the game's unit markers on the View Icons
+    /// screen. Null-safe like every other read here.
+    /// </summary>
+    public static float ViewIconsMarkerScaleFactor =>
+        UnityEngine.Mathf.Clamp(ViewIconsMarkerScale?.Value ?? 1f, 0.5f, 5f);
+
     /// <summary>
     /// The View Icons screen's horizontal field of view: its own setting, or
     /// the visor's when that is 0. Null-safe like every other read here.
@@ -75,6 +84,20 @@ public static class CapturedHmd
                 + "also resizing the helmet readouts and the weapon/map panels. Takes effect "
                 + "immediately.",
                 new AcceptableValueRange<float>(0f, 110f)));
+
+        ViewIconsMarkerScale = config.Bind(
+            "Experimental",
+            "View Icons Marker Scale",
+            1f,
+            new ConfigDescription(
+                "Size of the game's markers on units (the full icons, the small square or "
+                + "triangle a distant hostile shrinks to, and the selected target's box), without "
+                + "moving anything. The View Icons screen packs the flat game's 1920 pixels into "
+                + "View Icons Field Of View, so a narrow field of view also shrinks every marker "
+                + "against the world: at 40 degrees they are less than half the size they are in "
+                + "the flat game, and about 3 brings them back. Applies the next time the game "
+                + "resizes a marker, within a second or so.",
+                new AcceptableValueRange<float>(0.5f, 5f)));
 
         PanelShading = config.Bind(
             "Experimental",
