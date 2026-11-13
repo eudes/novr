@@ -12,13 +12,6 @@ namespace NOVR.VrUi;
 /// </summary>
 public class MotionControllerVisual : MonoBehaviour
 {
-    private struct HandState
-    {
-        public float IdleTime;
-        public Vector3 LastPosition;
-        public Quaternion LastRotation;
-    }
-
     private GameObject _rightModel;
     private GameObject _leftModel;
     private Transform _rightTip;
@@ -27,8 +20,8 @@ public class MotionControllerVisual : MonoBehaviour
     private LineRenderer _leftLaser;
     private Transform _rightReticle;
     private Transform _leftReticle;
-    private HandState _rightState;
-    private HandState _leftState;
+    private ControllerRestDetector _rightState;
+    private ControllerRestDetector _leftState;
 
     private void Start()
     {
@@ -71,7 +64,7 @@ public class MotionControllerVisual : MonoBehaviour
         Transform reticle,
         bool showModels,
         bool showLaser,
-        ref HandState state)
+        ref ControllerRestDetector state)
     {
         if (model == null)
         {
@@ -88,26 +81,17 @@ public class MotionControllerVisual : MonoBehaviour
 
         if (!tracked)
         {
+            state.Reset();
             model.SetActive(false);
             return;
         }
 
         // Hide the model after a configurable idle period (controller put
         // down), reappearing as soon as it moves again.
-        var idleTimeout = ModConfiguration.Instance.ControllerIdleTimeout.Value;
-        if (idleTimeout > 0f)
+        if (state.Update(position, rotation, Time.unscaledDeltaTime, ModConfiguration.Instance.ControllerIdleTimeout.Value))
         {
-            var moved = Vector3.Distance(position, state.LastPosition) > 0.02f ||
-                        Quaternion.Angle(state.LastRotation, rotation) > 3f;
-            state.IdleTime = moved ? 0f : state.IdleTime + Time.unscaledDeltaTime;
-            state.LastPosition = position;
-            state.LastRotation = rotation;
-
-            if (state.IdleTime > idleTimeout)
-            {
-                model.SetActive(false);
-                return;
-            }
+            model.SetActive(false);
+            return;
         }
 
         model.SetActive(showModels);
