@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -43,10 +44,20 @@ public class OffscreenGraphicCuller : MonoBehaviour
     /// </summary>
     private const float Margin = 2f;
 
-    private static readonly Vector3[] Corners = new Vector3[4];
+    // Per graphic, filled at each rescan. This runs on every converted canvas
+    // every frame over hundreds of graphics, so it keeps engine calls per
+    // graphic to a minimum: the frame timing log put the old version, at
+    // seven engine calls per graphic, at about 1 ms of main thread a frame.
+    private readonly List<Graphic> _scan = new();
+    private Graphic[] _graphics = Array.Empty<Graphic>();
+    private RectTransform[] _rects = Array.Empty<RectTransform>();
+    private CanvasRenderer?[] _renderers = Array.Empty<CanvasRenderer?>();
+
+    // The cull value last written per graphic, so CanvasRenderer.cull is
+    // neither read back nor rewritten every frame.
+    private bool[] _culled = Array.Empty<bool>();
 
     private RectTransform _canvasRect;
-    private Graphic[] _graphics = Array.Empty<Graphic>();
     private float _nextRescan;
 
     private void Awake()
@@ -61,7 +72,7 @@ public class OffscreenGraphicCuller : MonoBehaviour
         if (Time.unscaledTime >= _nextRescan)
         {
             _nextRescan = Time.unscaledTime + RescanInterval;
-            _graphics = GetComponentsInChildren<Graphic>(true);
+            Rescan();
         }
 
         var bounds = _canvasRect.rect;
@@ -70,38 +81,68 @@ public class OffscreenGraphicCuller : MonoBehaviour
         bounds.yMin -= Margin;
         bounds.yMax += Margin;
 
-        foreach (var graphic in _graphics)
-        {
-            if (graphic == null) continue;
+        var worldToCanvas = _canvasRect.worldToLocalMatrix;
 
-            var renderer = graphic.canvasRenderer;
+        for (var i = 0; i < _graphics.Length; i++)
+        {
+            var graphic = _graphics[i];
+
+            // An inactive graphic draws nothing, so its cull flag can wait until
+            // it is active again; this LateUpdate runs before the frame renders.
+            if (graphic == null || !graphic.isActiveAndEnabled) continue;
+
+            var renderer = _renderers[i];
             if (renderer == null) continue;
 
-            var cull = IsEntirelyOutside(bounds, graphic.rectTransform);
+            var cull = IsEntirelyOutside(bounds, worldToCanvas, _rects[i]);
 
             // Only write on a change: CanvasRenderer.cull dirties the batch when
             // it is set, even to the value it already had.
-            if (renderer.cull != cull)
+            if (_culled[i] != cull)
             {
                 renderer.cull = cull;
+                _culled[i] = cull;
             }
         }
     }
 
-    private bool IsEntirelyOutside(Rect bounds, RectTransform target)
+    private void Rescan()
+    {
+        _scan.Clear();
+        GetComponentsInChildren(true, _scan);
+
+        var count = _scan.Count;
+        _graphics = _scan.ToArray();
+        _rects = new RectTransform[count];
+        _renderers = new CanvasRenderer?[count];
+        _culled = new bool[count];
+
+        for (var i = 0; i < count; i++)
+        {
+            var graphic = _graphics[i];
+            _rects[i] = graphic.rectTransform;
+            _renderers[i] = graphic.canvasRenderer;
+            _culled[i] = _renderers[i] != null && _renderers[i]!.cull;
+        }
+    }
+
+    private static bool IsEntirelyOutside(Rect bounds, Matrix4x4 worldToCanvas, RectTransform target)
     {
         if (target == null) return false;
 
-        // Corners go through world space rather than being read from the local
-        // rect, because the element may be scaled, rotated or nested several
-        // layouts deep; the only position that matters is the one it renders at.
-        target.GetWorldCorners(Corners);
+        // The element's corners in canvas space, through one combined matrix
+        // rather than world corners plus four InverseTransformPoint calls; the
+        // element may be scaled, rotated or nested several layouts deep, and
+        // the only position that matters is the one it renders at.
+        var toCanvas = worldToCanvas * target.localToWorldMatrix;
+        var rect = target.rect;
 
         float minX = float.MaxValue, maxX = float.MinValue;
         float minY = float.MaxValue, maxY = float.MinValue;
         for (var i = 0; i < 4; i++)
         {
-            var local = _canvasRect.InverseTransformPoint(Corners[i]);
+            var corner = new Vector3(i < 2 ? rect.xMin : rect.xMax, i == 0 || i == 3 ? rect.yMin : rect.yMax, 0f);
+            var local = toCanvas.MultiplyPoint3x4(corner);
             if (local.x < minX) minX = local.x;
             if (local.x > maxX) maxX = local.x;
             if (local.y < minY) minY = local.y;
