@@ -41,6 +41,7 @@ public class Core : MonoBehaviour
         gameObject.AddComponent<ColorGradeController>();
         gameObject.AddComponent<MotionControllerVisual>();
         gameObject.AddComponent<FocusWarning>();
+        gameObject.AddComponent<FrameTimingLog>();
     }
 
     /// <summary>

@@ -23,7 +23,7 @@ namespace NOVR;
 public class NOVRPlugin : BaseUnityPlugin
 {
     
-    private const string HarmonyId = "deltawing.novr";
+    internal const string HarmonyId = "deltawing.novr";
 
     private static NOVRPlugin _instance;
     private static Harmony? _harmony;
@@ -39,6 +39,7 @@ public class NOVRPlugin : BaseUnityPlugin
         if (ShouldDisableVr())
         {
             Logger.LogWarning("NOVR disabled (config `Disable VR Mod` or `--no-vr` launch flag). Running the game unmodified: no patches applied, XR never started.");
+            _flatFrameTiming = FrameTimingLogConfig.Enabled;
             return;
         }
 
@@ -111,9 +112,12 @@ public class NOVRPlugin : BaseUnityPlugin
         NOVRHeadsetData.CalibrateTranslation();
     }
      
+    // Set by the constructor when VR is disabled; the log is attached in Awake.
+    private bool _flatFrameTiming;
+
     private void Awake()
     {
-
+        if (_flatFrameTiming) FrameTimingLog.AttachFlat(gameObject);
     }
     
     
