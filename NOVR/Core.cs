@@ -42,6 +42,7 @@ public class Core : MonoBehaviour
         gameObject.AddComponent<MotionControllerVisual>();
         gameObject.AddComponent<FocusWarning>();
         gameObject.AddComponent<FrameTimingLog>();
+        gameObject.AddComponent<GameplayPatches.TargetCamThrottle>();
     }
 
     /// <summary>
