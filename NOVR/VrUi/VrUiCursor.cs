@@ -87,6 +87,24 @@ public class VrUiCursor: NOVRBehaviour
     private Texture2D? _texture;
     private const float MaxYawDegrees = 65f;
     private const float MaxPitchDegrees = 45f;
+
+    /// <summary>
+    /// How far the cursor may move between press and release, in degrees of
+    /// aim, before the UI treats the click as a drag.
+    ///
+    /// <para>Unity's default drag threshold is 10 pixels, and the VR cursor
+    /// spreads the screen over the aim angles: at 4K about 30 pixels per
+    /// degree. Pulling a trigger turns the controller by more than a third of
+    /// a degree, so a click on anything inside a scroll view (the graphics
+    /// settings, the mission lists) became a tiny scroll drag instead, and the
+    /// dropdown or button under it did nothing; it took a few tries to hold
+    /// still enough. Buttons outside scroll views were unaffected, having no
+    /// drag handler to hand the click to.</para>
+    /// </summary>
+    private const float ClickDragToleranceDegrees = 1.5f;
+
+    private int _originalDragThreshold = -1;
+    private EventSystem? _dragThresholdEventSystem;
     private const float DefaultProjectionDistance = 5;
     // How far a controller has to move, from where it was the last time the
     // mouse moved, to take the cursor back from the mouse. Much looser than
@@ -324,6 +342,8 @@ public class VrUiCursor: NOVRBehaviour
         var realMouse = _realMouse;
         if (realMouse == null || _virtualMouse == null) return;
 
+        ApplyDragThreshold();
+
         var leftPressed = realMouse.leftButton.isPressed || _controllerTriggerPressed;
         var leftClicked = realMouse.leftButton.wasPressedThisFrame || _controllerTriggerClicked;
         UpdateCursorAnimation(leftPressed, leftClicked);
@@ -344,9 +364,38 @@ public class VrUiCursor: NOVRBehaviour
             buttons = buttons
         });
 
-        if (realMouse.leftButton.wasPressedThisFrame)
+        // Trigger clicks too, not only the mouse: they are most of the clicks
+        // in a headset, and the only way to see in the log what one hit.
+        if (realMouse.leftButton.wasPressedThisFrame || _controllerTriggerClicked)
         {
             LogRaycastAtCursor();
+        }
+    }
+
+    /// <summary>
+    /// Raise the event system's drag threshold to
+    /// <see cref="ClickDragToleranceDegrees"/> of cursor travel. Re-checked every
+    /// frame because the event system is replaced on scene loads; never lowers
+    /// a threshold the game set higher.
+    /// </summary>
+    private void ApplyDragThreshold()
+    {
+        var eventSystem = EventSystem.current;
+        if (eventSystem == null) return;
+
+        if (!ReferenceEquals(eventSystem, _dragThresholdEventSystem))
+        {
+            _dragThresholdEventSystem = eventSystem;
+            _originalDragThreshold = eventSystem.pixelDragThreshold;
+        }
+
+        var pixelsPerDegree = Screen.width / (2f * MaxYawDegrees);
+        var threshold = Mathf.Max(_originalDragThreshold, Mathf.RoundToInt(pixelsPerDegree * ClickDragToleranceDegrees));
+        if (eventSystem.pixelDragThreshold != threshold)
+        {
+            eventSystem.pixelDragThreshold = threshold;
+            Debug.Log($"[VrUiCursor] UI drag threshold raised from {_originalDragThreshold} to {threshold} px " +
+                      $"({ClickDragToleranceDegrees:0.#} deg of cursor travel), so a trigger pull is not read as a drag.");
         }
     }
     
