@@ -53,7 +53,6 @@ public class UIBehaviorPatcher : NOVRBehaviour
     private static Dictionary<string, Type> _toPatch_name = new();
     private static List<GameObject> _toReactivate = new();
     private static readonly List<KeyValuePair<Component, Type>> _notReady = new();
-    private const string GenericCanvasName = "Canvas";
     
 
     static UIBehaviorPatcher()
@@ -160,13 +159,16 @@ public class UIBehaviorPatcher : NOVRBehaviour
 
                 // FindObjectsOfTypeAll also returns prefab assets, and a prefab
                 // that gets a component here passes it to every copy the game
-                // spawns later. For the specific canvas names that may be what
-                // makes them work, so it stays. The generic "Canvas" is a
-                // different matter: it is the default name of every nested
-                // canvas in every unit and mod prefab, so each one spawned during
-                // a session ran PositionZeroBehavior.Update every frame and was
-                // pinned to the world origin. That name means scene objects only.
-                if (name == GenericCanvasName && !go.scene.IsValid()) continue;
+                // spawns later. That includes the generic "Canvas" name, so
+                // every nested canvas in a spawned unit prefab is pinned to the
+                // world origin. It looks like a bug, and FinnGrndl/novr#2 limited
+                // "Canvas" to scene objects, but the first headset test of that
+                // showed a second, cockpit-fixed copy of HUD elements that
+                // shifted against the captured HUD with head movement. Most
+                // likely one of those prefab canvases is the aircraft's own
+                // in-cockpit HUD, which NOVR replaces with the captured HUD and
+                // which the pinning has been keeping out of view. Do not filter
+                // prefabs out here without first hiding that canvas another way.
                 if (_toPatch_name.TryGetValue(name, out var toAdd))
                 {
                     Debug.Log($"UIBehaviorPatcher: Adding {toAdd.Name} to {name} (name patch)");
