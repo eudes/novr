@@ -16,6 +16,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     private static readonly Vector2 NativeCanvasSize = new(2000f, 1125f);
     private const float MainMenuScanIntervalSeconds = 0.5f;
     private const float RequestedMenuTransitionSeconds = 0.5f;
+    private const float TopLevelMenuCheckSeconds = 0.1f;
     private const float RecenterDelaySeconds = 2.0f;
     private const float LiveRecenterDelaySeconds = 3.0f;
     private const float AnchorResetAfterHiddenSeconds = 1.5f;
@@ -59,6 +60,8 @@ public class NativeVrUiRoot : NOVRBehaviour
     private float _pendingRecenterTime;
     private bool _recenterPending;
     private bool _menuAnchorInitialized;
+    private bool _topLevelMainMenuAvailable;
+    private float _nextTopLevelMenuCheckTime;
     private float _pendingLiveRecenterTime;
     private bool _liveRecenterPending;
     private float _lastNativeUiVisibleTime = -100f;
@@ -104,7 +107,7 @@ public class NativeVrUiRoot : NOVRBehaviour
 
         var mainCanvasActive = _mainCanvas != null && _mainCanvas.activeInHierarchy;
         var controlMapperOpen = IsControlMapperOpen();
-        var topLevelMainMenuAvailable = _actions.IsTopLevelMainMenuAvailable;
+        var topLevelMainMenuAvailable = IsTopLevelMainMenuAvailableThrottled(mainCanvasActive);
         var waitingForSinglePlayerMissionPicker = _singlePlayerMissionPickerRequested &&
                                                   Time.unscaledTime - _singlePlayerMissionPickerRequestTime < RequestedMenuTransitionSeconds;
         var waitingForMultiplayer = _multiplayerRequested &&
@@ -681,11 +684,15 @@ public class NativeVrUiRoot : NOVRBehaviour
 
     private static GameObject? FindMainCanvas()
     {
-        var gameObjects = Resources.FindObjectsOfTypeAll<GameObject>();
-        for (var index = 0; index < gameObjects.Length; index++)
+        // Canvases only, not Resources.FindObjectsOfTypeAll<GameObject>(): in
+        // flight that walked about 150,000 objects (assets included) and built
+        // a name string for each, twice a second, which the frame timing log
+        // showed as most of this component's main thread cost.
+        var canvases = FindObjectsByType<Canvas>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        for (var index = 0; index < canvases.Length; index++)
         {
-            var gameObject = gameObjects[index];
-            if (gameObject.name == "MainCanvas" && gameObject.GetComponent<Canvas>() != null)
+            var gameObject = canvases[index].gameObject;
+            if (gameObject.name == "MainCanvas")
             {
                 return gameObject;
             }
@@ -763,8 +770,36 @@ public class NativeVrUiRoot : NOVRBehaviour
         return GameManager.controlMapper != null && GameManager.controlMapper.isOpen;
     }
 
+    /// <summary>
+    /// <see cref="NativeGameActionAdapter.IsTopLevelMainMenuAvailable"/> lists
+    /// every button under MainCanvas and reads their labels, which is too dear
+    /// to do every frame. Every use of it here is also gated on MainCanvas
+    /// being active, so it is skipped while it is not, and otherwise refreshed
+    /// at most every <see cref="TopLevelMenuCheckSeconds"/>. A menu action
+    /// forces a refresh, and the request flags carry the transitions that
+    /// follow one (see <see cref="RequestedMenuTransitionSeconds"/>), so the
+    /// short staleness only delays noticing a menu the game opened itself.
+    /// </summary>
+    private bool IsTopLevelMainMenuAvailableThrottled(bool mainCanvasActive)
+    {
+        if (!mainCanvasActive)
+        {
+            _nextTopLevelMenuCheckTime = 0f;
+            return _topLevelMainMenuAvailable = false;
+        }
+
+        if (Time.unscaledTime >= _nextTopLevelMenuCheckTime)
+        {
+            _nextTopLevelMenuCheckTime = Time.unscaledTime + TopLevelMenuCheckSeconds;
+            _topLevelMainMenuAvailable = _actions.IsTopLevelMainMenuAvailable;
+        }
+
+        return _topLevelMainMenuAvailable;
+    }
+
     private void OnNativeActionInvoked(NativeGameAction action)
     {
+        _nextTopLevelMenuCheckTime = 0f;
         _vrUiSettingsOpen = false;
         _singlePlayerMissionPickerRequested = action == NativeGameAction.SinglePlayer;
         if (_singlePlayerMissionPickerRequested)

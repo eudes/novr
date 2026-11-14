@@ -51,22 +51,58 @@ public class Patcher
             return;
         }
 
+        var renderMode = ReadStereoRenderMode();
+
         var applySettingsMethod = openXrSettingsType.Methods.FirstOrDefault(method => method.Name == "ApplySettings");
         if (applySettingsMethod != null)
         {
-            ForceMultiPass(applySettingsMethod, renderModeField, openXrSettingsType);
+            ForceRenderMode(applySettingsMethod, renderModeField, openXrSettingsType, renderMode);
         }
 
         var awakeMethod = openXrSettingsType.Methods.FirstOrDefault(method => method.Name == "Awake");
         if (awakeMethod != null)
         {
-            ForceMultiPass(awakeMethod, renderModeField, openXrSettingsType);
+            ForceRenderMode(awakeMethod, renderModeField, openXrSettingsType, renderMode);
         }
 
-        Console.WriteLine("[NOVR.Patcher] Patched OpenXRSettings to force MultiPass.");
+        Console.WriteLine($"[NOVR.Patcher] Patched OpenXRSettings to force {renderMode}.");
     }
 
-    private static void ForceMultiPass(MethodDefinition method, FieldDefinition renderModeField, TypeDefinition openXrSettingsType)
+    /// <summary>
+    /// The plugin's "Experimental > Stereo Render Mode" setting, read straight
+    /// from its config file: this runs in the preloader, before the plugin or
+    /// BepInEx's config system exists. MultiPass unless the file says
+    /// SinglePassInstanced. Single-pass instanced was reverted upstream as
+    /// broken with this game; the setting exists so it can be looked at again.
+    /// </summary>
+    private static string ReadStereoRenderMode()
+    {
+        const string fallback = "MultiPass";
+        try
+        {
+            var patcherDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
+            var configPath = Path.Combine(patcherDir, "..", "..", "config", "deltawing.novr.cfg");
+            if (!File.Exists(configPath)) return fallback;
+
+            foreach (var line in File.ReadAllLines(configPath))
+            {
+                var trimmed = line.Trim();
+                if (!trimmed.StartsWith("Stereo Render Mode", StringComparison.Ordinal)) continue;
+                var equals = trimmed.IndexOf('=');
+                if (equals < 0) continue;
+                var value = trimmed.Substring(equals + 1).Trim();
+                return value == "SinglePassInstanced" ? value : fallback;
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"[NOVR.Patcher] Could not read Stereo Render Mode, using {fallback}: {e.Message}");
+        }
+
+        return fallback;
+    }
+
+    private static void ForceRenderMode(MethodDefinition method, FieldDefinition renderModeField, TypeDefinition openXrSettingsType, string renderMode)
     {
         if (!method.HasBody)
         {
@@ -77,7 +113,7 @@ public class Patcher
         var singlePassValue = openXrSettingsType.NestedTypes
             .First(type => type.Name == "RenderMode")
             .Fields
-            .First(field => field.Name == "MultiPass");
+            .First(field => field.Name == renderMode);
 
         var il = method.Body.GetILProcessor();
         var firstInstruction = method.Body.Instructions.First();
