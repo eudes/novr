@@ -61,6 +61,23 @@ public class MenuCaptureBackend : NOVRBehaviour
     private Rect? _view;
 
     /// <summary>
+    /// True while the F1 settings window is the only thing on the panel. The
+    /// panel then shows just that window, small, see-through and off to one
+    /// side, fixed in the cockpit; the capture camera stays off and the game's
+    /// overlay canvases, the flight HUD capture included, carry on as if no
+    /// menu were open, so the pilot can fly with the window up.
+    /// </summary>
+    private bool _imguiOnly;
+
+    /// <summary>
+    /// The frame the panel is fixed in while <see cref="_imguiOnly"/>: the
+    /// game camera's mount, which is the cockpit eye point in flight, and the
+    /// panel's facing relative to it when it was opened.
+    /// </summary>
+    private Transform? _anchorFrame;
+    private Quaternion _anchorLocalRotation = Quaternion.identity;
+
+    /// <summary>
     /// Angle one IMGUI pixel covers on a cropped panel. The settings window
     /// draws its text at about 13 pixels, so this makes it about 0.85 degrees
     /// tall, comfortably readable; at full 4K it was about a third of that.
@@ -105,7 +122,15 @@ public class MenuCaptureBackend : NOVRBehaviour
     /// Only while capturing, so a build with the backend off — or a session
     /// that never reaches a menu — renders exactly as before.
     /// </summary>
-    public static bool SuppressesScreenOverlayUi => IsActive;
+    public static bool SuppressesScreenOverlayUi => CapturesOverlay;
+
+    /// <summary>
+    /// True while the panel is capturing the game's overlay canvases (a menu,
+    /// the keybinding screen), as opposed to showing only the F1 settings
+    /// window. Only then must the flight HUD capture stand down: both draw
+    /// every overlay canvas, and one camera at a time can.
+    /// </summary>
+    public static bool CapturesOverlay => IsActive && !_instance!._imguiOnly;
 
     /// <summary>
     /// This backend is how the game's own menus are shown in VR — there is no
@@ -174,6 +199,7 @@ public class MenuCaptureBackend : NOVRBehaviour
         }
 
         _view = imguiOnly ? ImguiView() : null;
+        _imguiOnly = imguiOnly;
 
         if (wantCapture) _lastWantedCapture = Time.unscaledTime;
 
@@ -526,7 +552,8 @@ public class MenuCaptureBackend : NOVRBehaviour
             // angle so its text reads at a fixed size whatever the screen.
             _panelRect.sizeDelta = new Vector2(PanelCanvasReferenceWidth, PanelCanvasReferenceWidth * view.height / view.width);
             var distance = Mathf.Clamp(ModConfiguration.Instance.CapturedMenuDistance.Value, 1f, 6f);
-            var viewWidthMeters = 2f * distance * Mathf.Tan(view.width * ImguiDegreesPerPixel * 0.5f * Mathf.Deg2Rad);
+            var degreesPerPixel = ImguiDegreesPerPixel * ImguiCaptureConfig.Size;
+            var viewWidthMeters = 2f * distance * Mathf.Tan(view.width * degreesPerPixel * 0.5f * Mathf.Deg2Rad);
             var viewScale = viewWidthMeters / PanelCanvasReferenceWidth;
             _panelRect.localScale = new Vector3(viewScale, viewScale, viewScale);
             return;
@@ -555,11 +582,17 @@ public class MenuCaptureBackend : NOVRBehaviour
             if (_panelCanvas.sortingOrder != sortingOrder) _panelCanvas.sortingOrder = sortingOrder;
         }
 
+        // With only the settings window up there is nothing to capture: the
+        // camera would otherwise take every overlay canvas, the HUD included,
+        // off the eye buffers and onto this panel.
+        if (_captureCamera != null && _captureCamera.enabled == _imguiOnly) _captureCamera.enabled = !_imguiOnly;
+
         var uv = NormalizedView();
         if (_panelImage != null)
         {
             if (_panelImage.texture != _target) _panelImage.texture = _target;
             _panelImage.uvRect = uv;
+            if (_panelImage.enabled == _imguiOnly) _panelImage.enabled = !_imguiOnly;
         }
 
         if (_imguiImage != null)
@@ -567,6 +600,7 @@ public class MenuCaptureBackend : NOVRBehaviour
             var imguiTexture = ImguiCapture.Texture;
             _imguiImage.texture = imguiTexture;
             _imguiImage.enabled = imguiTexture != null;
+            _imguiImage.color = new Color(1f, 1f, 1f, _imguiOnly ? ImguiCaptureConfig.Opacity : 1f);
             _imguiImage.uvRect = ImguiCapture.FlipVertical ? new Rect(uv.x, 1f - uv.y, uv.width, -uv.height) : uv;
         }
         ApplyPanelSize();
@@ -600,6 +634,11 @@ public class MenuCaptureBackend : NOVRBehaviour
         _anchorPosition = reference.transform.position;
         _anchorRotation = Quaternion.LookRotation(forward, Vector3.up);
         _anchorInitialized = true;
+
+        _anchorFrame = APIBus.MainCamera != null ? APIBus.MainCamera.transform.parent : null;
+        _anchorLocalRotation = _anchorFrame != null
+            ? Quaternion.Inverse(_anchorFrame.rotation) * _anchorRotation
+            : _anchorRotation;
     }
 
     private void ApplyAnchor()
@@ -617,10 +656,20 @@ public class MenuCaptureBackend : NOVRBehaviour
         // — which reads as "the backend renders nothing".
         var reference = APIBus.CockpitHudReference;
         var origin = reference != null ? reference.transform.position : _anchorPosition;
-        var position = origin + _anchorRotation * Vector3.forward * distance;
+
+        var rotation = _anchorRotation;
+        if (_imguiOnly)
+        {
+            // Fixed in the cockpit rather than in the world, so it turns with
+            // the aircraft, and offset to one side so the view ahead is clear.
+            var frame = _anchorFrame != null ? _anchorFrame.rotation * _anchorLocalRotation : _anchorRotation;
+            rotation = frame * Quaternion.Euler(-ImguiCaptureConfig.PitchDegrees, ImguiCaptureConfig.YawDegrees, 0f);
+        }
+
+        var position = origin + rotation * Vector3.forward * distance;
 
         _panelRect.position = position;
-        _panelRect.rotation = _anchorRotation;
+        _panelRect.rotation = rotation;
 
         // The panel is the surface the cursor is driven against, so head-gaze
         // amplification is measured from its centre.

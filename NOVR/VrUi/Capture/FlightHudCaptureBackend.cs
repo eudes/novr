@@ -161,7 +161,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         // canvas, so running them together would put the menu on the HUD glass
         // and the HUD on the menu panel. The menus win — they are the ones
         // being interacted with.
-        if (!Enabled || MenuCaptureBackend.IsActive)
+        if (!Enabled || MenuCaptureBackend.CapturesOverlay)
         {
             if (_capturing) TeardownCapture();
             return;

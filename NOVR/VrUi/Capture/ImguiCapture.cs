@@ -462,6 +462,16 @@ public static class ImguiCaptureConfig
     public static bool VrClick => SettingsWindowVrClick == null || SettingsWindowVrClick.Value;
     public static bool FlipVertical => SettingsWindowFlipVertical != null && SettingsWindowFlipVertical.Value;
 
+    public static ConfigEntry<float>? SettingsWindowOpacityEntry;
+    public static ConfigEntry<float>? SettingsWindowSizeEntry;
+    public static ConfigEntry<float>? SettingsWindowYawEntry;
+    public static ConfigEntry<float>? SettingsWindowPitchEntry;
+
+    public static float Opacity => Mathf.Clamp(SettingsWindowOpacityEntry?.Value ?? 0.75f, 0.2f, 1f);
+    public static float Size => Mathf.Clamp(SettingsWindowSizeEntry?.Value ?? 0.6f, 0.3f, 1.5f);
+    public static float YawDegrees => Mathf.Clamp(SettingsWindowYawEntry?.Value ?? 25f, -60f, 60f);
+    public static float PitchDegrees => Mathf.Clamp(SettingsWindowPitchEntry?.Value ?? -15f, -45f, 45f);
+
     public static void Bind(ConfigFile config)
     {
         CaptureSettingsWindow = config.Bind(
@@ -483,5 +493,47 @@ public static class ImguiCaptureConfig
             "Settings Window Flip Vertical",
             false,
             "Flip the settings window upside down on the panel. Only needed if it appears mirrored top to bottom.");
+
+        // The four below apply when the settings window is the only thing on
+        // the panel (always, with the native menu UI on): it is then a small
+        // see-through panel off to one side, fixed in the cockpit, so it can
+        // stay open while flying.
+        SettingsWindowOpacityEntry = config.Bind(
+            Section,
+            "Settings Window Opacity",
+            0.75f,
+            new ConfigDescription(
+                "How opaque the settings window (F1) is in the headset: 1 is solid, lower lets the cockpit "
+                + "and the world show through so you can fly with it open. Takes effect immediately.",
+                new AcceptableValueRange<float>(0.2f, 1f)));
+
+        SettingsWindowSizeEntry = config.Bind(
+            Section,
+            "Settings Window Size",
+            0.6f,
+            new ConfigDescription(
+                "Size of the settings window (F1) in the headset. 1 makes its text about 0.85 degrees tall, "
+                + "comfortable to read but most of the view; the default is smaller so it fits beside it. "
+                + "Takes effect immediately.",
+                new AcceptableValueRange<float>(0.3f, 1.5f)));
+
+        SettingsWindowYawEntry = config.Bind(
+            Section,
+            "Settings Window Horizontal Angle",
+            25f,
+            new ConfigDescription(
+                "Where the settings window (F1) sits left or right of the direction you faced when you "
+                + "opened it, in degrees: positive is to the right. The default puts it about where the "
+                + "weapon readout is. Takes effect immediately.",
+                new AcceptableValueRange<float>(-60f, 60f)));
+
+        SettingsWindowPitchEntry = config.Bind(
+            Section,
+            "Settings Window Vertical Angle",
+            -15f,
+            new ConfigDescription(
+                "Where the settings window (F1) sits above or below the direction you faced when you "
+                + "opened it, in degrees: negative is down. Takes effect immediately.",
+                new AcceptableValueRange<float>(-45f, 45f)));
     }
 }
