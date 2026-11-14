@@ -121,7 +121,7 @@ public class ViewLayerBackend : NOVRBehaviour
     private void OnDestroy()
     {
         if (ReferenceEquals(_instance, this)) _instance = null;
-        Teardown("NOVR is shutting down");
+        Teardown();
     }
 
     /// <summary>
@@ -131,16 +131,13 @@ public class ViewLayerBackend : NOVRBehaviour
     public static void ReleaseForSceneChange()
     {
         var self = _instance;
-        if (self != null && self._active) self.Teardown("the scene is changing");
+        if (self != null && self._active) self.Teardown();
     }
 
     private void Update()
     {
         var combatHud = SceneSingleton<CombatHUD>.i;
-        // Keyed on the flight HUD capture existing, not on it showing, for the
-        // same reason as the visor: a maximized map suspends the HUD, and that
-        // must hide this layer rather than tear it down and rebuild it.
-        var want = FlightHudCaptureBackend.IsCapturing &&
+        var want = FlightHudCaptureBackend.IsActive &&
                    !HarmonyPatches.SceneTransitionRelease.InProgress &&
                    (CapturedHmd.ViewIcons?.Value ?? true) &&
                    combatHud != null &&
@@ -149,7 +146,7 @@ public class ViewLayerBackend : NOVRBehaviour
 
         if (!want)
         {
-            if (_active) Teardown("the flight HUD capture ended, the setting is off, or the combat HUD is gone");
+            if (_active) Teardown();
             return;
         }
 
@@ -160,10 +157,7 @@ public class ViewLayerBackend : NOVRBehaviour
             Setup(combatHud!);
         }
 
-        var visible = FlightHudCaptureBackend.IsActive;
-        if (_islandCamera != null && _islandCamera.enabled != visible) _islandCamera.enabled = visible;
-        if (_panelCanvas != null && _panelCanvas.enabled != visible) _panelCanvas.enabled = visible;
-        if (visible) Maintain();
+        Maintain();
     }
 
     /// <summary>
@@ -287,13 +281,10 @@ public class ViewLayerBackend : NOVRBehaviour
         camera.allowHDR = false;
         camera.allowMSAA = false;
         camera.useOcclusionCulling = false;
-        camera.cullingMask = LayerHelper.CaptureIslandCullingMask;
 
         var data = camGo.AddComponent<UniversalAdditionalCameraData>();
         data.renderType = CameraRenderType.Base;
         data.renderPostProcessing = false;
-        // Draws UI into a texture: it never needs a shadow pass of its own.
-        data.renderShadows = false;
         data.requiresColorOption = CameraOverrideOption.Off;
         data.requiresDepthOption = CameraOverrideOption.Off;
 
@@ -478,7 +469,7 @@ public class ViewLayerBackend : NOVRBehaviour
             SceneSingleton<CombatHUD>.i.iconLayer == null ||
             SceneSingleton<CombatHUD>.i.iconLayer.parent != _canvas.transform)
         {
-            Teardown("the icon layer left the capture canvas");
+            Teardown();
             return;
         }
 
@@ -510,9 +501,8 @@ public class ViewLayerBackend : NOVRBehaviour
                   $"({fovDegrees:F0}deg horizontal), head-locked.");
     }
 
-    private void Teardown(string reason)
+    private void Teardown()
     {
-        if (_active) Debug.Log($"[NOVR] View layer torn down: {reason}.");
         _active = false;
 
         foreach (var entry in _captured)

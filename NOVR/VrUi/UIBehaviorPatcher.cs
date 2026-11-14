@@ -52,7 +52,6 @@ public class UIBehaviorPatcher : NOVRBehaviour
     private static Dictionary<Component, Type> _toPatch_component = new();
     private static Dictionary<string, Type> _toPatch_name = new();
     private static List<GameObject> _toReactivate = new();
-    private static readonly List<KeyValuePair<Component, Type>> _notReady = new();
     
 
     static UIBehaviorPatcher()
@@ -120,55 +119,30 @@ public class UIBehaviorPatcher : NOVRBehaviour
             _toReactivate.Clear();
         }
         
-        if (_toPatch_component.Count > 0)
+        foreach (var kvp in _toPatch_component)
         {
-            // A component whose object has no name yet is still being built; it
-            // stays queued for the next tick. The old code returned out of the
-            // whole method instead, which left the queue full and logged the
-            // same two lines again on every physics tick until the name arrived.
-            _notReady.Clear();
-            foreach (var kvp in _toPatch_component)
+            Debug.Log($"UIBehaviorPatcher: Adding {kvp.Value.Name} to {kvp.Key.name} (component patch)");
+            if (kvp.Key.name == "" || kvp.Key.name == null)
             {
-                var comp = kvp.Key;
-                if (comp == null) continue;
-                if (string.IsNullOrEmpty(comp.name))
-                {
-                    _notReady.Add(kvp);
-                    continue;
-                }
-
-                var toAdd = kvp.Value;
-                Debug.Log($"UIBehaviorPatcher: Adding {toAdd.Name} to {comp.name} (component patch)");
-                if (!comp.gameObject.TryGetComponent(toAdd, out Component _))
-                {
-                    AddAndBounceIfActive(comp.gameObject, toAdd);
-                }
+                Debug.LogWarning($"Component not loaded fully?");
+                return;
             }
-
-            _toPatch_component.Clear();
-            foreach (var kvp in _notReady) _toPatch_component[kvp.Key] = kvp.Value;
+            var comp = kvp.Key;
+            var toAdd = kvp.Value;
+            if (!comp.gameObject.TryGetComponent(toAdd, out Component _))
+            {
+                AddAndBounceIfActive(comp.gameObject, toAdd);
+            }
         }
+        _toPatch_component.Clear();
 
 
         if (_toPatch_name.Count > 0)
         {
             foreach (var go in Resources.FindObjectsOfTypeAll(typeof(GameObject)) as GameObject[])
             {
-                if (go == null) continue;
+                
                 var name = go.name;
-
-                // FindObjectsOfTypeAll also returns prefab assets, and a prefab
-                // that gets a component here passes it to every copy the game
-                // spawns later. That includes the generic "Canvas" name, so
-                // every nested canvas in a spawned unit prefab is pinned to the
-                // world origin. It looks like a bug, and FinnGrndl/novr#2 limited
-                // "Canvas" to scene objects, but the first headset test of that
-                // showed a second, cockpit-fixed copy of HUD elements that
-                // shifted against the captured HUD with head movement. Most
-                // likely one of those prefab canvases is the aircraft's own
-                // in-cockpit HUD, which NOVR replaces with the captured HUD and
-                // which the pinning has been keeping out of view. Do not filter
-                // prefabs out here without first hiding that canvas another way.
                 if (_toPatch_name.TryGetValue(name, out var toAdd))
                 {
                     Debug.Log($"UIBehaviorPatcher: Adding {toAdd.Name} to {name} (name patch)");

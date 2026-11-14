@@ -41,13 +41,6 @@ public static class LayerHelper
         VrUiCapture = 31,
     }
 
-    /// <summary>
-    /// What a UI capture camera parked far from the world has to see: the layers UI lives on, and
-    /// Default because its canvas sits there. The rest is world geometry it would only cull.
-    /// </summary>
-    public const int CaptureIslandCullingMask =
-        (1 << (int)Layers.Default) | (1 << (int)Layers.UI) | (1 << (int)Layers.HUD) | (1 << (int)Layers.VrUi);
-
     public static Layers GetVrUiLayer() => Layers.VrUi;
 
     public static Layers GetVrUiCaptureLayer() => Layers.VrUiCapture;
