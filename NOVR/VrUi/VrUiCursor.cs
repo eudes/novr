@@ -708,8 +708,17 @@ public class VrUiCursor: NOVRBehaviour
         // override is set). The reference is fixed, so head movement does not
         // move the cursor — it tracks the controller only. Clamping to the
         // mouse's pitch/yaw bounds keeps the cursor inside the HUD.
+        //
+        // The controller pose comes raw from tracking space, but the head is
+        // recentred: NOVRHeadsetData applies RotationCalibrationOffset to it.
+        // Without the same correction here, a tracking origin that does not
+        // face the cockpit (SteamVR's seated origin 100 degrees off, say)
+        // turns the view the right way after a recentre but leaves the cursor
+        // measuring the controller against the old forward, clamped at the
+        // panel edge however the controller is pointed.
         var referenceRotation = GetProjectionReferenceRotation();
-        var localForward = Quaternion.Inverse(referenceRotation) * (controllerRotation * Vector3.forward);
+        var aimRotation = NOVRHeadsetData.RotationCalibrationOffset * controllerRotation;
+        var localForward = Quaternion.Inverse(referenceRotation) * (aimRotation * Vector3.forward);
         var pitch = Mathf.Clamp(Mathf.Asin(Mathf.Clamp(localForward.y, -1f, 1f)) * Mathf.Rad2Deg, -MaxPitchDegrees, MaxPitchDegrees);
         var yaw = Mathf.Clamp(Mathf.Atan2(localForward.x, localForward.z) * Mathf.Rad2Deg, -MaxYawDegrees, MaxYawDegrees);
 
