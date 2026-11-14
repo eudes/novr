@@ -104,27 +104,37 @@ public class MenuCaptureBackend : NOVRBehaviour
 
     private void Update()
     {
-        if (!Enabled)
+        // The F1 settings window has no other way into the headset: IMGUI is
+        // drawn onto this panel whichever menu implementation runs. So with the
+        // native menu UI on, the backend still runs, but for that window only;
+        // the game's menus are the native UI's to show.
+        if (!Enabled && !ImguiCapture.WindowOpen)
         {
-            if (_capturing) TeardownCapture();
+            if (_capturing && Time.unscaledTime - _lastWantedCapture > TeardownGrace) TeardownCapture();
             return;
         }
 
-        if (Time.unscaledTime >= _nextRebind)
-        {
-            _nextRebind = Time.unscaledTime + RebindInterval;
-            _menuCanvas = FindMenuCanvas();
-        }
+        var wantCapture = false;
+        _reason = null;
 
-        var wantCapture = _menuCanvas != null &&
+        if (Enabled)
+        {
+            if (Time.unscaledTime >= _nextRebind)
+            {
+                _nextRebind = Time.unscaledTime + RebindInterval;
+                _menuCanvas = FindMenuCanvas();
+            }
+
+            wantCapture = _menuCanvas != null &&
                           _menuCanvas.isActiveAndEnabled &&
                           _menuCanvas.renderMode == RenderMode.ScreenSpaceOverlay;
 
-        _reason = wantCapture ? "the menu canvas" : null;
-        if (ControlMapperUp())
-        {
-            _reason = wantCapture ? "the menu canvas and the keybinding screen" : "the keybinding screen";
-            wantCapture = true;
+            _reason = wantCapture ? "the menu canvas" : null;
+            if (ControlMapperUp())
+            {
+                _reason = wantCapture ? "the menu canvas and the keybinding screen" : "the keybinding screen";
+                wantCapture = true;
+            }
         }
 
         if (ImguiCapture.WindowOpen)
