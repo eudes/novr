@@ -69,6 +69,16 @@ public class MenuCaptureBackend : NOVRBehaviour
 
     /// <summary>Margin kept around the settings window on a cropped panel, in pixels.</summary>
     private const float ImguiViewMargin = 12f;
+
+    /// <summary>
+    /// Sorting order of the panel while the F1 settings window is on it. All of
+    /// NOVR's world-space UI is drawn by the cockpit HUD camera, where sorting
+    /// order decides what is on top regardless of distance: the panel's
+    /// default of 0 put the settings window behind the main menu, the native
+    /// menu (5000) and the game's own menus. This is above all of them and
+    /// below the cursor (short.MaxValue), which has to stay visible on it.
+    /// </summary>
+    private const int ImguiSortingOrder = 32000;
     private Vector3 _anchorPosition;
     private Quaternion _anchorRotation = Quaternion.identity;
     private bool _anchorInitialized;
@@ -538,6 +548,12 @@ public class MenuCaptureBackend : NOVRBehaviour
         EnsureTarget();
         EnsureCaptureCamera();
         EnsurePanel();
+
+        if (_panelCanvas != null)
+        {
+            var sortingOrder = ImguiCapture.WindowOpen ? ImguiSortingOrder : 0;
+            if (_panelCanvas.sortingOrder != sortingOrder) _panelCanvas.sortingOrder = sortingOrder;
+        }
 
         var uv = NormalizedView();
         if (_panelImage != null)
