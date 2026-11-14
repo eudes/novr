@@ -84,6 +84,15 @@ public class OffscreenGraphicCuller : MonoBehaviour
             if (renderer.cull != cull)
             {
                 renderer.cull = cull;
+                // A culled graphic skips its rebuilds, so whatever changed while
+                // it was culled has no mesh yet. RectMask2D tells the graphic
+                // when it un-culls, and the graphic queues the missed rebuild;
+                // a bare write to the flag does not, and the element stays
+                // invisible until something else dirties it. That is how map
+                // icons came back empty: a pooled icon, culled while parked off
+                // the canvas, moved onto the map and un-culled here, only showed
+                // after a click on the map redrew the icons.
+                graphic.OnCullingChanged();
             }
         }
     }
