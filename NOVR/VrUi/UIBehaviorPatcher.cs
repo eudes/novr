@@ -52,6 +52,8 @@ public class UIBehaviorPatcher : NOVRBehaviour
     private static Dictionary<Component, Type> _toPatch_component = new();
     private static Dictionary<string, Type> _toPatch_name = new();
     private static List<GameObject> _toReactivate = new();
+    private static readonly List<KeyValuePair<Component, Type>> _notReady = new();
+    private const string GenericCanvasName = "Canvas";
     
 
     static UIBehaviorPatcher()
@@ -119,30 +121,52 @@ public class UIBehaviorPatcher : NOVRBehaviour
             _toReactivate.Clear();
         }
         
-        foreach (var kvp in _toPatch_component)
+        if (_toPatch_component.Count > 0)
         {
-            Debug.Log($"UIBehaviorPatcher: Adding {kvp.Value.Name} to {kvp.Key.name} (component patch)");
-            if (kvp.Key.name == "" || kvp.Key.name == null)
+            // A component whose object has no name yet is still being built; it
+            // stays queued for the next tick. The old code returned out of the
+            // whole method instead, which left the queue full and logged the
+            // same two lines again on every physics tick until the name arrived.
+            _notReady.Clear();
+            foreach (var kvp in _toPatch_component)
             {
-                Debug.LogWarning($"Component not loaded fully?");
-                return;
+                var comp = kvp.Key;
+                if (comp == null) continue;
+                if (string.IsNullOrEmpty(comp.name))
+                {
+                    _notReady.Add(kvp);
+                    continue;
+                }
+
+                var toAdd = kvp.Value;
+                Debug.Log($"UIBehaviorPatcher: Adding {toAdd.Name} to {comp.name} (component patch)");
+                if (!comp.gameObject.TryGetComponent(toAdd, out Component _))
+                {
+                    AddAndBounceIfActive(comp.gameObject, toAdd);
+                }
             }
-            var comp = kvp.Key;
-            var toAdd = kvp.Value;
-            if (!comp.gameObject.TryGetComponent(toAdd, out Component _))
-            {
-                AddAndBounceIfActive(comp.gameObject, toAdd);
-            }
+
+            _toPatch_component.Clear();
+            foreach (var kvp in _notReady) _toPatch_component[kvp.Key] = kvp.Value;
         }
-        _toPatch_component.Clear();
 
 
         if (_toPatch_name.Count > 0)
         {
             foreach (var go in Resources.FindObjectsOfTypeAll(typeof(GameObject)) as GameObject[])
             {
-                
+                if (go == null) continue;
                 var name = go.name;
+
+                // FindObjectsOfTypeAll also returns prefab assets, and a prefab
+                // that gets a component here passes it to every copy the game
+                // spawns later. For the specific canvas names that may be what
+                // makes them work, so it stays. The generic "Canvas" is a
+                // different matter: it is the default name of every nested
+                // canvas in every unit and mod prefab, so each one spawned during
+                // a session ran PositionZeroBehavior.Update every frame and was
+                // pinned to the world origin. That name means scene objects only.
+                if (name == GenericCanvasName && !go.scene.IsValid()) continue;
                 if (_toPatch_name.TryGetValue(name, out var toAdd))
                 {
                     Debug.Log($"UIBehaviorPatcher: Adding {toAdd.Name} to {name} (name patch)");
