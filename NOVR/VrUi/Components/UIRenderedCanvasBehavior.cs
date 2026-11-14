@@ -39,6 +39,13 @@ public class UIRenderedCanvasBehavior : MonoBehaviour
         {
             gameObject.AddComponent<OffscreenGraphicCuller>();
         }
+
+        // Most of the game's menu text uses a TMP shader that only draws on a
+        // screen overlay. See OverlayTextMaterialFix.
+        if (gameObject.GetComponent<OverlayTextMaterialFix>() == null)
+        {
+            gameObject.AddComponent<OverlayTextMaterialFix>();
+        }
     }
     
     
