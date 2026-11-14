@@ -45,6 +45,10 @@ internal static class ImguiCapture
     private static float _nextLookup;
     private static object? _configManager;
     private static PropertyInfo? _displayingWindow;
+    private static PropertyInfo? _settingWindowRect;
+    private static FieldInfo? _keybindField;
+    private static FieldInfo? _overrideHotkeyField;
+    private static bool _displayingAtLastLateTick;
     private static bool _loggedMissing;
     private static bool _loggedActive;
 
@@ -109,8 +113,13 @@ internal static class ImguiCapture
                 }
 
                 _configManager = info.Instance;
-                _displayingWindow = _configManager.GetType().GetProperty(
-                    "DisplayingWindow", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var type = _configManager.GetType();
+                const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                _displayingWindow = type.GetProperty("DisplayingWindow", any);
+                _settingWindowRect = type.GetProperty("SettingWindowRect", any);
+                _keybindField = type.GetField("_keybind", any);
+                _overrideHotkeyField = type.GetField("OverrideHotkey", any);
+                PatchWindowLayout(type);
                 if (_displayingWindow == null)
                 {
                     Debug.LogWarning("[NOVR] IMGUI capture: Configuration Manager has no DisplayingWindow property; cannot tell when F1 is open.");
@@ -135,6 +144,169 @@ internal static class ImguiCapture
             return false;
         }
     }
+
+    /// <summary>
+    /// The settings window's rectangle in IMGUI coordinates (pixels, origin
+    /// top left), while the window is open.
+    /// </summary>
+    public static bool TryGetWindowRect(out Rect rect)
+    {
+        rect = default;
+        if (!_windowOpen || _configManager == null || _settingWindowRect == null) return false;
+        try
+        {
+            rect = (Rect)_settingWindowRect.GetValue(_configManager, null);
+            return rect.width > 0f && rect.height > 0f;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Tallest the settings window may be, in pixels. The Configuration
+    /// Manager makes it the screen height less 100: at 4K a 650 x 2060 pixel
+    /// column, which in the headset is a strip of tiny text much taller than
+    /// the view. Capped, it is a window that fits in front of the pilot.
+    /// </summary>
+    public const float MaxWindowHeight = 760f;
+
+    /// <summary>
+    /// Called after the Configuration Manager lays its window out: keep its
+    /// width and position, cap its height and centre it again vertically.
+    /// </summary>
+    internal static void LimitWindowHeight(object configManager)
+    {
+        try
+        {
+            var property = configManager.GetType().GetProperty(
+                "SettingWindowRect", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (property == null) return;
+
+            var rect = (Rect)property.GetValue(configManager, null);
+            if (rect.height <= MaxWindowHeight) return;
+
+            rect.y = Mathf.Round((Screen.height - MaxWindowHeight) / 2f);
+            rect.height = MaxWindowHeight;
+            property.SetValue(configManager, rect, null);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[NOVR] IMGUI capture: could not resize the settings window: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The Configuration Manager's own F1 test is BepInEx's
+    /// <c>KeyboardShortcut.IsDown</c>, which refuses whenever any other key is
+    /// held, joystick buttons included. A HOTAS switch left in its "on"
+    /// position is a held joystick button, so F1 did nothing on most presses.
+    /// Runs after every Update: if the key went down this frame and the
+    /// manager did not toggle its window, toggle it here.
+    /// </summary>
+    internal static void LateTick()
+    {
+        if (_configManager == null || _displayingWindow == null) return;
+
+        bool displaying;
+        try
+        {
+            displaying = _displayingWindow.GetValue(_configManager, null) is true;
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        var key = HotkeyMainKey();
+        if (key != KeyCode.None &&
+            UnityEngine.Input.GetKeyDown(key) &&
+            displaying == _displayingAtLastLateTick &&
+            !(_overrideHotkeyField?.GetValue(_configManager) is true))
+        {
+            try
+            {
+                displaying = !displaying;
+                _displayingWindow.SetValue(_configManager, displaying, null);
+                Debug.Log($"[NOVR] IMGUI capture: the Configuration Manager ignored {key} ({HeldKeys(key)}); " +
+                          $"{(displaying ? "opened" : "closed")} its window directly.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[NOVR] IMGUI capture: could not toggle the settings window: {e.Message}");
+            }
+        }
+
+        _displayingAtLastLateTick = displaying;
+    }
+
+    private static KeyCode HotkeyMainKey()
+    {
+        try
+        {
+            if (_keybindField?.GetValue(_configManager) is ConfigEntry<KeyboardShortcut> entry)
+            {
+                return entry.Value.MainKey;
+            }
+        }
+        catch (Exception)
+        {
+            // Fall through to the default.
+        }
+
+        return KeyCode.F1;
+    }
+
+    private static string HeldKeys(KeyCode except)
+    {
+        var held = new System.Collections.Generic.List<string>();
+        foreach (KeyCode code in Enum.GetValues(typeof(KeyCode)))
+        {
+            if (code == except || code == KeyCode.None) continue;
+            if (code >= KeyCode.Mouse0 && code <= KeyCode.Mouse6) continue;
+            if (UnityEngine.Input.GetKey(code)) held.Add(code.ToString());
+            if (held.Count >= 6) break;
+        }
+
+        return held.Count == 0
+            ? "no other held key found"
+            : "also held: " + string.Join(", ", held);
+    }
+
+    private static bool _patchedWindowLayout;
+
+    /// <summary>
+    /// Hooks <see cref="LimitWindowHeight"/> after the manager's own layout.
+    /// Patched here, on first contact, rather than with a [HarmonyPatch]: the
+    /// manager's assembly need not be loaded yet when NOVR's patches are
+    /// applied at start-up.
+    /// </summary>
+    private static void PatchWindowLayout(Type type)
+    {
+        if (_patchedWindowLayout) return;
+        _patchedWindowLayout = true;
+
+        var method = type.GetMethod("CalculateWindowRect", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method == null)
+        {
+            Debug.LogWarning("[NOVR] IMGUI capture: Configuration Manager has no CalculateWindowRect; its window keeps the full screen height.");
+            return;
+        }
+
+        try
+        {
+            new HarmonyLib.Harmony(NOVRPlugin.HarmonyId).Patch(
+                method,
+                postfix: new HarmonyLib.HarmonyMethod(typeof(ImguiCapture), nameof(CalculateWindowRectPostfix)));
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[NOVR] IMGUI capture: could not hook the settings window layout: {e.Message}");
+        }
+    }
+
+    private static void CalculateWindowRectPostfix(object __instance) => LimitWindowHeight(__instance);
 
     internal static void BeginRepaint()
     {
@@ -248,6 +420,8 @@ internal static class ImguiCapture
 internal class ImguiCaptureBegin : NOVRBehaviour
 {
     private void Update() => ImguiCapture.Tick();
+
+    private void LateUpdate() => ImguiCapture.LateTick();
 
     private void OnGUI()
     {

@@ -51,6 +51,24 @@ public class MenuCaptureBackend : NOVRBehaviour
     private RawImage? _panelImage;
     private RawImage? _imguiImage;
     private RectTransform? _panelRect;
+
+    /// <summary>
+    /// The part of the screen the panel shows, in screen pixels (origin bottom
+    /// left), or null for the whole screen. Set to the F1 settings window when
+    /// that window is the only thing being captured, so the panel is the
+    /// window rather than a 4K screen with a small window somewhere on it.
+    /// </summary>
+    private Rect? _view;
+
+    /// <summary>
+    /// Angle one IMGUI pixel covers on a cropped panel. The settings window
+    /// draws its text at about 13 pixels, so this makes it about 0.85 degrees
+    /// tall, comfortably readable; at full 4K it was about a third of that.
+    /// </summary>
+    private const float ImguiDegreesPerPixel = 0.065f;
+
+    /// <summary>Margin kept around the settings window on a cropped panel, in pixels.</summary>
+    private const float ImguiViewMargin = 12f;
     private Vector3 _anchorPosition;
     private Quaternion _anchorRotation = Quaternion.identity;
     private bool _anchorInitialized;
@@ -137,11 +155,15 @@ public class MenuCaptureBackend : NOVRBehaviour
             }
         }
 
+        var imguiOnly = false;
         if (ImguiCapture.WindowOpen)
         {
+            imguiOnly = !wantCapture;
             _reason = wantCapture ? $"{_reason} and the F1 settings window" : "the F1 settings window";
             wantCapture = true;
         }
+
+        _view = imguiOnly ? ImguiView() : null;
 
         if (wantCapture) _lastWantedCapture = Time.unscaledTime;
 
@@ -457,9 +479,48 @@ public class MenuCaptureBackend : NOVRBehaviour
         ApplyPanelSize();
     }
 
+    /// <summary>
+    /// The settings window's rectangle in screen pixels, with a margin, or
+    /// null if it cannot be read.
+    /// </summary>
+    private static Rect? ImguiView()
+    {
+        if (!ImguiCapture.TryGetWindowRect(out var window)) return null;
+
+        // IMGUI measures from the top of the screen, the rest of Unity from
+        // the bottom.
+        var xMin = Mathf.Max(0f, window.xMin - ImguiViewMargin);
+        var xMax = Mathf.Min(Screen.width, window.xMax + ImguiViewMargin);
+        var yMin = Mathf.Max(0f, Screen.height - window.yMax - ImguiViewMargin);
+        var yMax = Mathf.Min(Screen.height, Screen.height - window.yMin + ImguiViewMargin);
+        if (xMax - xMin < 32f || yMax - yMin < 32f) return null;
+
+        return Rect.MinMaxRect(xMin, yMin, xMax, yMax);
+    }
+
+    /// <summary>The panel's view as a fraction of the screen (0..1, origin bottom left).</summary>
+    private Rect NormalizedView()
+    {
+        if (_view is not { } view || Screen.width <= 0 || Screen.height <= 0) return new Rect(0f, 0f, 1f, 1f);
+        return new Rect(view.x / Screen.width, view.y / Screen.height,
+            view.width / Screen.width, view.height / Screen.height);
+    }
+
     private void ApplyPanelSize()
     {
         if (_panelRect == null) return;
+
+        if (_view is { } view)
+        {
+            // Cropped to the settings window: shaped like it, and sized by
+            // angle so its text reads at a fixed size whatever the screen.
+            _panelRect.sizeDelta = new Vector2(PanelCanvasReferenceWidth, PanelCanvasReferenceWidth * view.height / view.width);
+            var distance = Mathf.Clamp(ModConfiguration.Instance.CapturedMenuDistance.Value, 1f, 6f);
+            var viewWidthMeters = 2f * distance * Mathf.Tan(view.width * ImguiDegreesPerPixel * 0.5f * Mathf.Deg2Rad);
+            var viewScale = viewWidthMeters / PanelCanvasReferenceWidth;
+            _panelRect.localScale = new Vector3(viewScale, viewScale, viewScale);
+            return;
+        }
 
         var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
         _panelRect.sizeDelta = new Vector2(PanelCanvasReferenceWidth, PanelCanvasReferenceWidth / aspect);
@@ -478,13 +539,19 @@ public class MenuCaptureBackend : NOVRBehaviour
         EnsureCaptureCamera();
         EnsurePanel();
 
-        if (_panelImage != null && _panelImage.texture != _target) _panelImage.texture = _target;
+        var uv = NormalizedView();
+        if (_panelImage != null)
+        {
+            if (_panelImage.texture != _target) _panelImage.texture = _target;
+            _panelImage.uvRect = uv;
+        }
+
         if (_imguiImage != null)
         {
             var imguiTexture = ImguiCapture.Texture;
             _imguiImage.texture = imguiTexture;
             _imguiImage.enabled = imguiTexture != null;
-            _imguiImage.uvRect = ImguiCapture.FlipVertical ? new Rect(0f, 1f, 1f, -1f) : new Rect(0f, 0f, 1f, 1f);
+            _imguiImage.uvRect = ImguiCapture.FlipVertical ? new Rect(uv.x, 1f - uv.y, uv.width, -uv.height) : uv;
         }
         ApplyPanelSize();
         ApplyAnchor();
@@ -567,10 +634,13 @@ public class MenuCaptureBackend : NOVRBehaviour
         if (size.x <= 0f || size.y <= 0f) return false;
 
         // Rect pivot is centred, so shift into 0..1 before scaling to pixels.
+        // The panel may show only part of the screen (the F1 window); the
+        // point is mapped into that part.
         var normalized = new Vector2(local.x / size.x + 0.5f, local.y / size.y + 0.5f);
+        var view = _instance.NormalizedView();
         screenPoint = new Vector2(
-            Mathf.Clamp(normalized.x * Screen.width, 0f, Screen.width),
-            Mathf.Clamp(normalized.y * Screen.height, 0f, Screen.height));
+            Mathf.Clamp((view.x + normalized.x * view.width) * Screen.width, 0f, Screen.width),
+            Mathf.Clamp((view.y + normalized.y * view.height) * Screen.height, 0f, Screen.height));
         return true;
     }
 
@@ -585,9 +655,12 @@ public class MenuCaptureBackend : NOVRBehaviour
         var size = rect.rect.size;
         if (size.x <= 0f || size.y <= 0f) return false;
 
+        var view = _instance.NormalizedView();
+        var u = (Mathf.Clamp01(screenPoint.x / Screen.width) - view.x) / view.width;
+        var v = (Mathf.Clamp01(screenPoint.y / Screen.height) - view.y) / view.height;
         worldPoint = rect.TransformPoint(new Vector3(
-            (Mathf.Clamp01(screenPoint.x / Screen.width) - 0.5f) * size.x,
-            (Mathf.Clamp01(screenPoint.y / Screen.height) - 0.5f) * size.y,
+            (Mathf.Clamp01(u) - 0.5f) * size.x,
+            (Mathf.Clamp01(v) - 0.5f) * size.y,
             0f));
         return true;
     }
