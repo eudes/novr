@@ -330,10 +330,13 @@ public class HmdVisorBackend : NOVRBehaviour
         camera.allowHDR = false;
         camera.allowMSAA = false;
         camera.useOcclusionCulling = false;
+        camera.cullingMask = LayerHelper.CaptureIslandCullingMask;
 
         var data = go.AddComponent<UniversalAdditionalCameraData>();
         data.renderType = CameraRenderType.Base;
         data.renderPostProcessing = false;
+        // Draws UI into a texture: it never needs a shadow pass of its own.
+        data.renderShadows = false;
         data.requiresColorOption = CameraOverrideOption.Off;
         data.requiresDepthOption = CameraOverrideOption.Off;
 

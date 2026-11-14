@@ -389,6 +389,8 @@ public class MenuCaptureBackend : NOVRBehaviour
         var data = go.AddComponent<UniversalAdditionalCameraData>();
         data.renderType = CameraRenderType.Base;
         data.renderPostProcessing = false;
+        // Draws UI into a texture: it never needs a shadow pass of its own.
+        data.renderShadows = false;
         data.requiresColorOption = CameraOverrideOption.Off;
         data.requiresDepthOption = CameraOverrideOption.Off;
 
