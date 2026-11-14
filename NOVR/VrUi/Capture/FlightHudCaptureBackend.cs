@@ -120,6 +120,12 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private float _nextRebind;
     private float _lastWantedCapture;
     private bool _capturing;
+    /// <summary>
+    /// Capture kept but not drawn: the HUD canvas is hidden (the game hides it
+    /// while the map is maximized and around camera changes) or a menu is
+    /// being captured instead. See <see cref="SetSuspended"/>.
+    /// </summary>
+    private bool _suspended;
     private bool _loggedPlacement;
     private int _targetWidth;
     private int _targetHeight;
@@ -130,8 +136,16 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private float _eyePixelsPerDegree;
     private bool _loggedSampling;
 
-    /// <summary>True while this backend owns the overlay UI.</summary>
-    public static bool IsActive => _instance != null && _instance._capturing;
+    /// <summary>True while this backend owns the overlay UI and its panel is showing.</summary>
+    public static bool IsActive => _instance != null && _instance._capturing && !_instance._suspended;
+
+    /// <summary>
+    /// True while the capture exists, shown or suspended. The visor and the
+    /// view layer key their own lifetime on this rather than on
+    /// <see cref="IsActive"/>, so that a suspension does not tear them down
+    /// either.
+    /// </summary>
+    public static bool IsCapturing => _instance != null && _instance._capturing;
 
     public static bool IsCaptureCamera(Camera? camera) =>
         camera != null && _instance != null && ReferenceEquals(camera, _instance._captureCamera);
@@ -152,18 +166,14 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private void OnDestroy()
     {
         if (ReferenceEquals(_instance, this)) _instance = null;
-        TeardownCapture();
+        TeardownCapture("NOVR is shutting down");
     }
 
     private void Update()
     {
-        // One capture camera at a time: both backends draw *every* overlay
-        // canvas, so running them together would put the menu on the HUD glass
-        // and the HUD on the menu panel. The menus win — they are the ones
-        // being interacted with.
-        if (!Enabled || MenuCaptureBackend.IsActive)
+        if (!Enabled)
         {
-            if (_capturing) TeardownCapture();
+            if (_capturing) TeardownCapture("the setting was turned off");
             return;
         }
 
@@ -177,16 +187,65 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         // it is what says the HUD really was left alone. If some other layer
         // converts the canvas after all, the overlay pass draws nothing and the
         // panel would hang there blank.
-        var wantCapture = _hudCanvas != null &&
-                          _hudCanvas.isActiveAndEnabled &&
-                          _hudCanvas.renderMode == RenderMode.ScreenSpaceOverlay;
+        var alive = _hudCanvas != null &&
+                    _hudCanvas.gameObject.scene.isLoaded &&
+                    _hudCanvas.renderMode == RenderMode.ScreenSpaceOverlay;
 
-        if (wantCapture) _lastWantedCapture = Time.unscaledTime;
+        // One capture camera at a time: both backends draw *every* overlay
+        // canvas, so running them together would put the menu on the HUD glass
+        // and the HUD on the menu panel. The menus win — they are the ones
+        // being interacted with.
+        var shown = alive && _hudCanvas!.isActiveAndEnabled && !MenuCaptureBackend.IsActive;
 
-        if (wantCapture && !_capturing) SetupCapture();
-        else if (!wantCapture && _capturing && Time.unscaledTime - _lastWantedCapture > TeardownGrace) TeardownCapture();
+        if (alive) _lastWantedCapture = Time.unscaledTime;
 
-        if (_capturing) UpdatePanel();
+        // Hidden is not gone. The game hides the HUD canvas whenever the map is
+        // maximized, and this used to tear the whole capture down 1.5 s later
+        // and build it again on the way back: new render targets, new cameras,
+        // and the visor and view layer with it — measured 14 times in an 11
+        // minute multiplayer session, a hitch every time the map was opened.
+        // Only a canvas that is really gone (destroyed, unloaded, or no longer
+        // an overlay) ends the capture now; a hidden one suspends it.
+        if (shown && !_capturing) SetupCapture();
+        else if (!alive && _capturing && Time.unscaledTime - _lastWantedCapture > TeardownGrace)
+            TeardownCapture(_hudCanvas == null ? "the HUD canvas was destroyed"
+                : !_hudCanvas.gameObject.scene.isLoaded ? "the HUD canvas's scene was unloaded"
+                : $"the HUD canvas is no longer an overlay ({_hudCanvas.renderMode})");
+
+        if (!_capturing) return;
+
+        SetSuspended(!shown, MenuCaptureBackend.IsActive ? "a menu is being captured" : "the game hid the HUD canvas");
+        if (!_suspended) UpdatePanel();
+    }
+
+    /// <summary>
+    /// Stop drawing the capture without throwing it away. The capture camera
+    /// stops rendering and the panel goes dark, which is everything the
+    /// teardown achieved for the pilot, but the render target, cameras and
+    /// panels stay, and so does the visor and view layer built on them, so
+    /// coming back is a flag rather than a rebuild. While suspended,
+    /// <see cref="IsActive"/> is false, so URP draws the overlay canvases
+    /// normally again, exactly as it did after a teardown.
+    /// </summary>
+    private void SetSuspended(bool suspended, string reason)
+    {
+        if (_suspended == suspended) return;
+        _suspended = suspended;
+
+        if (_captureCamera != null) _captureCamera.enabled = !suspended;
+        if (_panelCanvas != null) _panelCanvas.enabled = !suspended;
+
+        if (suspended)
+        {
+            // The game's own state while we are not drawing, as after a teardown;
+            // UpdatePanel puts both back on the first shown frame.
+            WeaponSafetyWash.Restore();
+            RestorePixelSnap();
+        }
+
+        Debug.Log(suspended
+            ? $"[NOVR] Captured flight HUD suspended: {reason}. Kept for when it comes back."
+            : "[NOVR] Captured flight HUD resumed.");
     }
 
     private static Canvas? FindHudCanvas()
@@ -216,9 +275,11 @@ public class FlightHudCaptureBackend : NOVRBehaviour
                   $"{_targetWidth}x{_targetHeight} texture on a cockpit-fixed panel.");
     }
 
-    private void TeardownCapture()
+    private void TeardownCapture(string reason)
     {
+        if (_capturing) Debug.Log($"[NOVR] Captured flight HUD torn down: {reason}.");
         _capturing = false;
+        _suspended = false;
         _loggedSampling = false;
         WeaponSafetyWash.Restore();
         RestorePixelSnap();
@@ -569,6 +630,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     public static Camera? ConformalProjectionCamera =>
         _instance != null &&
         _instance._capturing &&
+        !_instance._suspended &&
         (CapturedFlightHud.Conformal?.Value ?? true) &&
         _instance._projectionCamera != null &&
         _instance._projectionCamera.gameObject.activeInHierarchy

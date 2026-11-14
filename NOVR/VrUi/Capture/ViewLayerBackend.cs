@@ -121,7 +121,7 @@ public class ViewLayerBackend : NOVRBehaviour
     private void OnDestroy()
     {
         if (ReferenceEquals(_instance, this)) _instance = null;
-        Teardown();
+        Teardown("NOVR is shutting down");
     }
 
     /// <summary>
@@ -131,13 +131,16 @@ public class ViewLayerBackend : NOVRBehaviour
     public static void ReleaseForSceneChange()
     {
         var self = _instance;
-        if (self != null && self._active) self.Teardown();
+        if (self != null && self._active) self.Teardown("the scene is changing");
     }
 
     private void Update()
     {
         var combatHud = SceneSingleton<CombatHUD>.i;
-        var want = FlightHudCaptureBackend.IsActive &&
+        // Keyed on the flight HUD capture existing, not on it showing, for the
+        // same reason as the visor: a maximized map suspends the HUD, and that
+        // must hide this layer rather than tear it down and rebuild it.
+        var want = FlightHudCaptureBackend.IsCapturing &&
                    !HarmonyPatches.SceneTransitionRelease.InProgress &&
                    (CapturedHmd.ViewIcons?.Value ?? true) &&
                    combatHud != null &&
@@ -146,7 +149,7 @@ public class ViewLayerBackend : NOVRBehaviour
 
         if (!want)
         {
-            if (_active) Teardown();
+            if (_active) Teardown("the flight HUD capture ended, the setting is off, or the combat HUD is gone");
             return;
         }
 
@@ -157,7 +160,10 @@ public class ViewLayerBackend : NOVRBehaviour
             Setup(combatHud!);
         }
 
-        Maintain();
+        var visible = FlightHudCaptureBackend.IsActive;
+        if (_islandCamera != null && _islandCamera.enabled != visible) _islandCamera.enabled = visible;
+        if (_panelCanvas != null && _panelCanvas.enabled != visible) _panelCanvas.enabled = visible;
+        if (visible) Maintain();
     }
 
     /// <summary>
@@ -469,7 +475,7 @@ public class ViewLayerBackend : NOVRBehaviour
             SceneSingleton<CombatHUD>.i.iconLayer == null ||
             SceneSingleton<CombatHUD>.i.iconLayer.parent != _canvas.transform)
         {
-            Teardown();
+            Teardown("the icon layer left the capture canvas");
             return;
         }
 
@@ -501,8 +507,9 @@ public class ViewLayerBackend : NOVRBehaviour
                   $"({fovDegrees:F0}deg horizontal), head-locked.");
     }
 
-    private void Teardown()
+    private void Teardown(string reason)
     {
+        if (_active) Debug.Log($"[NOVR] View layer torn down: {reason}.");
         _active = false;
 
         foreach (var entry in _captured)
